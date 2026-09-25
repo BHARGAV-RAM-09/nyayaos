@@ -9,6 +9,8 @@ from app.services.supabase_client import supabase
 from app.services.evidence_service import EvidenceStorageService
 from app.services.pdf_service import PDFService
 from app.services.ocr_service import OCRService
+from app.services.ai_extraction_service import AIExtractionService
+from app.services.groq_service import GroqService
 
 
 router = APIRouter(
@@ -467,4 +469,233 @@ async def upload_evidence(
             else 0
         ),
         "data": response.data
+    }
+
+
+# ============================================================
+# GENERATE CASE INTELLIGENCE
+# ============================================================
+
+@router.post("/cases/{case_id}/intelligence")
+def generate_case_intelligence(case_id: str):
+
+    # ========================================================
+    # 1. CHECK CASE EXISTS
+    # ========================================================
+
+    case_response = (
+        supabase
+        .table("cases")
+        .select(
+            """
+            case_id,
+            title,
+            description,
+            jurisdiction_country,
+            jurisdiction_state
+            """
+        )
+        .eq("case_id", case_id)
+        .execute()
+    )
+
+    if not case_response.data:
+        raise HTTPException(
+            status_code=404,
+            detail="Case not found"
+        )
+
+    case_data = case_response.data[0]
+
+
+    # ========================================================
+    # 2. GET ALL EVIDENCE FOR CASE
+    # ========================================================
+
+    evidence_response = (
+        supabase
+        .table("evidence")
+        .select(
+            """
+            evidence_id,
+            file_name,
+            extraction_status,
+            extracted_text,
+            created_at
+            """
+        )
+        .eq("case_id", case_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+
+    evidence_records = evidence_response.data or []
+
+    if not evidence_records:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No evidence has been uploaded for this case."
+            )
+        )
+
+
+    # ========================================================
+    # 3. COLLECT EXTRACTED TEXT
+    # ========================================================
+
+    evidence_sections = []
+
+    for evidence in evidence_records:
+
+        extracted_text = evidence.get(
+            "extracted_text"
+        )
+
+        if not extracted_text:
+            continue
+
+        file_name = evidence.get(
+            "file_name",
+            "Unknown evidence"
+        )
+
+        evidence_sections.append(
+            (
+                f"--- EVIDENCE FILE: {file_name} ---\n\n"
+                f"{extracted_text}\n"
+            )
+        )
+
+
+    # ========================================================
+    # 4. CHECK FOR USABLE EVIDENCE
+    # ========================================================
+
+    if not evidence_sections:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "No extracted text is available from the "
+                "uploaded evidence. Please upload readable "
+                "evidence first."
+            )
+        )
+
+
+    # ========================================================
+    # 5. COMBINE EVIDENCE
+    # ========================================================
+
+    combined_evidence_text = "\n".join(
+        evidence_sections
+    )
+
+
+    # ========================================================
+    # 6. INITIALIZE GROQ AI SERVICE
+    # ========================================================
+
+    try:
+
+        groq_service = GroqService()
+
+        ai_service = AIExtractionService(
+            groq_service.get_client()
+        )
+
+    except Exception as e:
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Failed to initialize AI service: "
+                f"{str(e)}"
+            )
+        )
+
+
+    # ========================================================
+    # 7. EXTRACT CASE INTELLIGENCE
+    # ========================================================
+
+    try:
+
+        case_intelligence = (
+            ai_service.extract_case_intelligence(
+                combined_evidence_text
+            )
+        )
+
+    except Exception as e:
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Failed to generate case intelligence: "
+                f"{str(e)}"
+            )
+        )
+
+
+    # ========================================================
+    # 8. GENERATE CASE TIMELINE
+    # ========================================================
+
+    try:
+
+        timeline_result = (
+            ai_service.generate_timeline(
+                case_intelligence
+            )
+        )
+
+    except Exception as e:
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Failed to generate case timeline: "
+                f"{str(e)}"
+            )
+        )
+
+
+    # ========================================================
+    # 9. RETURN CASE INTELLIGENCE
+    # ========================================================
+
+    return {
+        "case_id": case_id,
+
+        "case": {
+            "title": case_data.get("title"),
+            "description": case_data.get("description"),
+            "jurisdiction_country": case_data.get(
+                "jurisdiction_country"
+            ),
+            "jurisdiction_state": case_data.get(
+                "jurisdiction_state"
+            ),
+        },
+
+        "evidence_count": len(evidence_records),
+
+        "processed_evidence_count": len(
+            evidence_sections
+        ),
+
+        "case_intelligence": case_intelligence,
+
+        # AI timeline generation may return either:
+        # 1. {"timeline": [...]}
+        # 2. [...]
+        # Normalize both formats so the API always returns a list.
+        "timeline": (
+            timeline_result.get("timeline", [])
+            if isinstance(timeline_result, dict)
+            else timeline_result
+            if isinstance(timeline_result, list)
+            else []
+        ),
     }
