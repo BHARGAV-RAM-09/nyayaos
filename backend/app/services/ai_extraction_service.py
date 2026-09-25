@@ -33,6 +33,10 @@ class AIExtractionService:
     def __init__(self, groq_client):
         self.client = groq_client
 
+    # ============================================================
+    # EXTRACT CASE INTELLIGENCE
+    # ============================================================
+
     def extract_case_intelligence(
         self,
         evidence_text: str,
@@ -69,6 +73,7 @@ Return exactly:
   "locations": [],
   "events": [],
   "claims": [],
+  "issues": [],
   "potential_domain": {{
     "primary": "",
     "secondary": [],
@@ -150,6 +155,45 @@ CLAIMS FORMAT:
   }}
 ]
 
+ISSUES FORMAT:
+
+[
+  {{
+    "issue": "",
+    "issue_type": "",
+    "description": ""
+  }}
+]
+
+ISSUE EXTRACTION RULES:
+
+- Extract only issues explicitly supported by the evidence.
+- An issue is a factual problem, dispute, concern, or unresolved matter
+  arising from the evidence.
+- Do not state that a law was violated.
+- Do not identify a specific law.
+- Do not provide legal advice.
+- Do not make a legal conclusion.
+- Do not invent an issue that is not supported by the evidence.
+- Preserve uncertainty where the evidence is incomplete.
+- Keep each issue concise.
+- Use neutral factual language.
+
+Examples of issue_type values include:
+
+- Unauthorized Transaction
+- Payment Dispute
+- Identity Dispute
+- Account Access
+- Service Dispute
+- Employment Dispute
+- Wage Dispute
+- Housing Dispute
+- Documentation Gap
+- Evidence Gap
+- Unresolved Complaint
+- Other
+
 POTENTIAL DOMAIN:
 
 Primary must be one of:
@@ -207,6 +251,7 @@ EVIDENCE TEXT:
 
         try:
             result = json.loads(content)
+
         except json.JSONDecodeError as exc:
             raise RuntimeError(
                 f"Groq returned invalid JSON: {content}"
@@ -215,6 +260,10 @@ EVIDENCE TEXT:
         self._validate_result(result)
 
         return result
+
+    # ============================================================
+    # VALIDATE CASE INTELLIGENCE
+    # ============================================================
 
     def _validate_result(
         self,
@@ -229,6 +278,7 @@ EVIDENCE TEXT:
             "locations",
             "events",
             "claims",
+            "issues",
         ]
 
         for key in expected_lists:
@@ -241,7 +291,12 @@ EVIDENCE TEXT:
                     f"Expected '{key}' to be a list."
                 )
 
+        # ========================================================
+        # VALIDATE POTENTIAL DOMAIN
+        # ========================================================
+
         if "potential_domain" not in result:
+
             result["potential_domain"] = {
                 "primary": "Unknown",
                 "secondary": [],
@@ -259,9 +314,21 @@ EVIDENCE TEXT:
 
         domain = result["potential_domain"]
 
-        domain.setdefault("primary", "Unknown")
-        domain.setdefault("secondary", [])
-        domain.setdefault("confidence", "low")
+        domain.setdefault(
+            "primary",
+            "Unknown",
+        )
+
+        domain.setdefault(
+            "secondary",
+            [],
+        )
+
+        domain.setdefault(
+            "confidence",
+            "low",
+        )
+
         domain.setdefault(
             "reason",
             "Insufficient information.",
@@ -270,14 +337,19 @@ EVIDENCE TEXT:
         if domain["primary"] not in self.ALLOWED_DOMAINS:
             domain["primary"] = "Unknown"
 
-        if not isinstance(domain["secondary"], list):
+        if not isinstance(
+            domain["secondary"],
+            list,
+        ):
             domain["secondary"] = []
 
         domain["secondary"] = [
             item
             for item in domain["secondary"]
-            if item in self.ALLOWED_DOMAINS
-            and item != domain["primary"]
+            if (
+                item in self.ALLOWED_DOMAINS
+                and item != domain["primary"]
+            )
         ]
 
         if domain["confidence"] not in [
@@ -286,6 +358,10 @@ EVIDENCE TEXT:
             "low",
         ]:
             domain["confidence"] = "low"
+
+        # ========================================================
+        # VALIDATE CASE SUMMARY
+        # ========================================================
 
         if "case_summary" not in result:
             result["case_summary"] = ""
@@ -297,6 +373,10 @@ EVIDENCE TEXT:
             result["case_summary"] = str(
                 result["case_summary"]
             )
+
+    # ============================================================
+    # GENERATE CASE SUMMARY
+    # ============================================================
 
     def generate_case_summary(
         self,
@@ -371,6 +451,10 @@ CASE INTELLIGENCE:
             )
 
         return summary.strip()
+
+    # ============================================================
+    # GENERATE TIMELINE
+    # ============================================================
 
     def generate_timeline(
         self,
@@ -487,14 +571,21 @@ INPUT:
 
         try:
             result = json.loads(content)
+
         except json.JSONDecodeError as exc:
             raise RuntimeError(
                 f"Groq returned invalid timeline JSON: {content}"
             ) from exc
 
-        timeline = result.get("timeline", [])
+        timeline = result.get(
+            "timeline",
+            [],
+        )
 
-        if not isinstance(timeline, list):
+        if not isinstance(
+            timeline,
+            list,
+        ):
             raise ValueError(
                 "Timeline must be a list."
             )

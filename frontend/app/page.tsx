@@ -57,6 +57,40 @@ type IntelligenceResult = {
   timeline?: unknown[];
 };
 
+type GraphNode = {
+  node_id: string;
+  case_id: string;
+  node_type: string;
+  label: string;
+  properties: Record<string, unknown>;
+  source_evidence_id?: string | null;
+  created_at: string;
+};
+
+type GraphEdge = {
+  edge_id: string;
+  case_id: string;
+  source_node_id: string;
+  target_node_id: string;
+  relationship_type: string;
+  source_evidence_id?: string | null;
+  confidence?: number | null;
+  properties: Record<string, unknown>;
+  created_at: string;
+};
+
+type GraphResult = {
+  case: CaseResult;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  summary: {
+    node_count: number;
+    edge_count: number;
+    node_counts: Record<string, number>;
+    edge_counts: Record<string, number>;
+  };
+};
+
 // ============================================================
 // GENERIC HELPERS
 // ============================================================
@@ -373,6 +407,28 @@ export default function Home() {
   ] = useState("");
 
   // ==========================================================
+  // JUSTICE GRAPH STATE
+  // ==========================================================
+
+  const [graph, setGraph] =
+    useState<GraphResult | null>(null);
+
+  const [graphLoading, setGraphLoading] =
+    useState(false);
+
+  const [graphError, setGraphError] =
+    useState("");
+
+  const [selectedGraphNode, setSelectedGraphNode] =
+    useState<GraphNode | null>(null);
+
+  const [existingCaseId, setExistingCaseId] =
+    useState("ac592acf-4ba2-4d95-bf6d-65857c22adef");
+
+  const [existingCaseLoading, setExistingCaseLoading] =
+    useState(false);
+
+  // ==========================================================
   // CREATE CASE
   // ==========================================================
 
@@ -392,6 +448,9 @@ export default function Home() {
 
     setIntelligence(null);
     setIntelligenceError("");
+    setGraph(null);
+    setGraphError("");
+    setSelectedGraphNode(null);
 
     try {
       const response = await fetch(
@@ -509,6 +568,9 @@ export default function Home() {
       // after new evidence is uploaded.
       setIntelligence(null);
       setIntelligenceError("");
+      setGraph(null);
+      setGraphError("");
+      setSelectedGraphNode(null);
 
       await loadEvidence(
         result.case_id
@@ -655,6 +717,454 @@ export default function Home() {
     }
   }
 
+
+  // ==========================================================
+  // LOAD JUSTICE GRAPH
+  // ==========================================================
+
+  async function loadJusticeGraph(
+    caseId: string
+  ) {
+    setGraphLoading(true);
+    setGraphError("");
+
+    try {
+      const response = await fetch(
+        `${API_URL}/api/cases/${caseId}/graph`,
+        {
+          method: "GET",
+          cache: "no-store",
+          headers: {
+            Accept: "application/json",
+          },
+        }
+      );
+
+      const data =
+        await response.json().catch(
+          () => null
+        );
+
+      if (!response.ok) {
+        throw new Error(
+          data?.detail ||
+          "Failed to load the Justice Graph."
+        );
+      }
+
+      setGraph(data);
+    } catch (error) {
+      console.error(
+        "Justice Graph error:",
+        error
+      );
+
+      setGraphError(
+        error instanceof Error
+          ? error.message
+          : "Failed to load the Justice Graph."
+      );
+    } finally {
+      setGraphLoading(false);
+    }
+  }
+
+
+  // ==========================================================
+  // LOAD EXISTING CASE
+  // ==========================================================
+
+  async function loadExistingCase() {
+    const caseId =
+      existingCaseId.trim();
+
+    if (!caseId) {
+      alert("Enter a Case ID first.");
+      return;
+    }
+
+    setExistingCaseLoading(true);
+    setGraph(null);
+    setGraphError("");
+    setSelectedGraphNode(null);
+
+    try {
+      // The current backend exposes GET /api/cases
+      // (list) rather than GET /api/cases/{case_id}.
+      // Load the list and select the requested case.
+      const casesResponse = await fetch(
+        `${API_URL}/api/cases`,
+        {
+          method: "GET",
+          cache: "no-store",
+          headers: {
+            Accept: "application/json",
+          },
+        }
+      );
+
+      const casesData =
+        await casesResponse.json().catch(
+          () => null
+        );
+
+      if (!casesResponse.ok) {
+        throw new Error(
+          casesData?.detail ||
+          "Cases could not be loaded."
+        );
+      }
+
+      const caseList = Array.isArray(
+        casesData
+      )
+        ? casesData
+        : Array.isArray(
+          casesData?.cases
+        )
+          ? casesData.cases
+          : [];
+
+      const caseData = caseList.find(
+        (item: {
+          case_id?: string;
+        }) =>
+          item.case_id === caseId
+      );
+
+      if (!caseData) {
+        throw new Error(
+          "Case not found. Check the Case ID."
+        );
+      }
+
+      const graphResponse = await fetch(
+        `${API_URL}/api/cases/${caseId}/graph`,
+        {
+          method: "GET",
+          cache: "no-store",
+          headers: {
+            Accept: "application/json",
+          },
+        }
+      );
+
+      const graphData =
+        await graphResponse.json().catch(
+          () => null
+        );
+
+      if (!graphResponse.ok) {
+        throw new Error(
+          graphData?.detail ||
+          "Justice Graph could not be loaded."
+        );
+      }
+
+      setResult(caseData);
+      setGraph(graphData);
+
+      await loadEvidence(caseId);
+    } catch (error) {
+      console.error(
+        "Existing case loading error:",
+        error
+      );
+
+      setGraphError(
+        error instanceof Error
+          ? error.message
+          : "Failed to load existing case."
+      );
+    } finally {
+      setExistingCaseLoading(false);
+    }
+  }
+
+  // ==========================================================
+  // GRAPH NODE STYLE
+  // ==========================================================
+
+  function getGraphNodeStyle(
+    nodeType: string
+  ) {
+    const styles: Record<
+      string,
+      {
+        border: string;
+        background: string;
+        accent: string;
+      }
+    > = {
+      CASE: {
+        border: "#ffffff",
+        background: "#151515",
+        accent: "#ffffff",
+      },
+      PERSON: {
+        border: "#4ade80",
+        background: "#0b1710",
+        accent: "#4ade80",
+      },
+      ORGANIZATION: {
+        border: "#60a5fa",
+        background: "#0b111b",
+        accent: "#60a5fa",
+      },
+      EVENT: {
+        border: "#fbbf24",
+        background: "#171307",
+        accent: "#fbbf24",
+      },
+      CLAIM: {
+        border: "#c084fc",
+        background: "#150c1c",
+        accent: "#c084fc",
+      },
+      ISSUE: {
+        border: "#fb7185",
+        background: "#1a0b10",
+        accent: "#fb7185",
+      },
+      DOCUMENT: {
+        border: "#22d3ee",
+        background: "#07161a",
+        accent: "#22d3ee",
+      },
+    };
+
+    return (
+      styles[nodeType] || {
+        border: "#666",
+        background: "#101010",
+        accent: "#aaa",
+      }
+    );
+  }
+
+  // ==========================================================
+  // GRAPH NODE POSITION
+  // ==========================================================
+
+  function getGraphPosition(
+    node: GraphNode,
+    nodes: GraphNode[]
+  ) {
+    const order = [
+      "CASE",
+      "PERSON",
+      "ORGANIZATION",
+      "EVENT",
+      "ISSUE",
+      "CLAIM",
+      "DOCUMENT",
+    ];
+
+    const groups: Record<
+      string,
+      GraphNode[]
+    > = {};
+
+    for (const item of nodes) {
+      if (!groups[item.node_type]) {
+        groups[item.node_type] = [];
+      }
+
+      groups[item.node_type].push(item);
+    }
+
+    const column =
+      order.indexOf(node.node_type) >= 0
+        ? order.indexOf(node.node_type)
+        : order.length;
+
+    const row = (
+      groups[node.node_type] || []
+    ).findIndex(
+      (item) =>
+        item.node_id === node.node_id
+    );
+
+    return {
+      x: 50 + column * 230,
+      y: 55 + Math.max(row, 0) * 135,
+    };
+  }
+
+  // ==========================================================
+  // GRAPH EDGE STATUS
+  // ==========================================================
+
+  function getGraphEdgeStatus(
+    edge: GraphEdge
+  ) {
+    const confidence =
+      Number(edge.confidence || 0);
+
+    const status =
+      isObject(edge.properties)
+        ? edge.properties.evidence_status
+        : undefined;
+
+    if (
+      edge.relationship_type ===
+      "SUPPORTS"
+    ) {
+      if (status === "SUPPORTED") {
+        return {
+          stroke: "#4ade80",
+          width: 3,
+          label: `SUPPORTED ${Math.round(
+            confidence * 100
+          )}%`,
+        };
+      }
+
+      if (status === "PARTIAL") {
+        return {
+          stroke: "#fbbf24",
+          width: 2,
+          label: `PARTIAL ${Math.round(
+            confidence * 100
+          )}%`,
+        };
+      }
+
+      return {
+        stroke: "#888",
+        width: 2,
+        label: `SUPPORTS ${Math.round(
+          confidence * 100
+        )}%`,
+      };
+    }
+
+    return {
+      stroke: "#555",
+      width: 1.5,
+      label: formatLabel(
+        edge.relationship_type
+      ),
+    };
+  }
+
+  // ==========================================================
+  // EVIDENCE COVERAGE
+  // ==========================================================
+
+  function getEvidenceCoverage() {
+    if (!graph) {
+      return null;
+    }
+
+    const claims = graph.nodes.filter(
+      (node) =>
+        node.node_type === "CLAIM"
+    );
+
+    let supported = 0;
+    let partial = 0;
+    let missing = 0;
+
+    for (const claim of claims) {
+      const relationships =
+        graph.edges.filter(
+          (edge) =>
+            edge.relationship_type ===
+            "SUPPORTS" &&
+            edge.target_node_id ===
+            claim.node_id
+        );
+
+      if (relationships.length === 0) {
+        missing++;
+        continue;
+      }
+
+      const confidence = Math.max(
+        ...relationships.map(
+          (edge) =>
+            Number(edge.confidence || 0)
+        )
+      );
+
+      if (confidence >= 0.7) {
+        supported++;
+      } else if (confidence >= 0.4) {
+        partial++;
+      } else {
+        missing++;
+      }
+    }
+
+    const percentage =
+      claims.length === 0
+        ? 0
+        : Math.round(
+          (
+            (supported +
+              partial * 0.5) /
+            claims.length
+          ) *
+          100
+        );
+
+    return {
+      total: claims.length,
+      supported,
+      partial,
+      missing,
+      percentage,
+    };
+  }
+
+
+  // ==========================================================
+  // EVIDENCE GRAPH DATA
+  // ==========================================================
+
+  function getEvidenceGraphData() {
+    if (!graph) {
+      return {
+        documents: [],
+        claims: [],
+        relationships: [],
+      };
+    }
+
+    const documents = graph.nodes.filter(
+      (node) =>
+        node.node_type === "DOCUMENT" ||
+        node.node_type === "EVIDENCE"
+    );
+
+    const claims = graph.nodes.filter(
+      (node) =>
+        node.node_type === "CLAIM"
+    );
+
+    const relationships = graph.edges.filter(
+      (edge) =>
+        edge.relationship_type === "SUPPORTS" &&
+        documents.some(
+          (document) =>
+            document.node_id ===
+            edge.source_node_id
+        ) &&
+        claims.some(
+          (claim) =>
+            claim.node_id ===
+            edge.target_node_id
+        )
+    );
+
+    return {
+      documents,
+      claims,
+      relationships,
+    };
+  }
+
   // ==========================================================
   // FORMAT FILE TYPE
   // ==========================================================
@@ -735,6 +1245,112 @@ export default function Home() {
         >
           AI-Powered Justice Operating System
         </p>
+
+        {/* ==================================================
+            EXISTING CASE LOADER
+        ================================================== */}
+
+        <section
+          style={{
+            border: "1px solid #333",
+            padding: "24px",
+            borderRadius: "10px",
+            marginBottom: "24px",
+            background: "#090909",
+          }}
+        >
+          <p
+            style={{
+              color: "#777",
+              fontSize: "12px",
+              textTransform: "uppercase",
+              letterSpacing: "1px",
+              margin: "0 0 8px 0",
+            }}
+          >
+            Phase 4.15 Testing
+          </p>
+
+          <h2
+            style={{
+              margin: "0 0 8px 0",
+            }}
+          >
+            Load Existing Case
+          </h2>
+
+          <p
+            style={{
+              color: "#888",
+              marginTop: 0,
+              lineHeight: "1.5",
+            }}
+          >
+            Load an already-created case directly
+            so the verified Justice Graph can be
+            tested without creating duplicate data.
+          </p>
+
+          <div
+            style={{
+              display: "flex",
+              gap: "10px",
+              flexWrap: "wrap",
+            }}
+          >
+            <input
+              type="text"
+              value={existingCaseId}
+              onChange={(e) =>
+                setExistingCaseId(
+                  e.target.value
+                )
+              }
+              placeholder="Case ID"
+              style={{
+                flex: "1 1 500px",
+                padding: "13px",
+                fontSize: "14px",
+                background: "#050505",
+                color: "#eee",
+                border: "1px solid #444",
+                borderRadius: "6px",
+                boxSizing: "border-box",
+              }}
+            />
+
+            <button
+              onClick={loadExistingCase}
+              disabled={existingCaseLoading}
+              style={{
+                padding: "13px 20px",
+                fontSize: "14px",
+                fontWeight: "600",
+                cursor:
+                  existingCaseLoading
+                    ? "not-allowed"
+                    : "pointer",
+              }}
+            >
+              {existingCaseLoading
+                ? "Loading Case..."
+                : "Load Existing Case"}
+            </button>
+          </div>
+
+          <p
+            style={{
+              color: "#666",
+              fontSize: "12px",
+              marginBottom: 0,
+              marginTop: "10px",
+            }}
+          >
+            Test case:
+            {" "}
+            ac592acf-4ba2-4d95-bf6d-65857c22adef
+          </p>
+        </section>
 
         {/* ==================================================
             CASE INTAKE
@@ -1245,6 +1861,1262 @@ export default function Home() {
                   )
                 )}
               </div>
+            </section>
+
+            {/* ==================================================
+                JUSTICE GRAPH
+            ================================================== */}
+
+            <section
+              style={{
+                padding: "30px",
+                border: "1px solid #444",
+                borderRadius: "10px",
+                marginBottom: "30px",
+                background: "#080808",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: "20px",
+                  flexWrap: "wrap",
+                  marginBottom: "20px",
+                }}
+              >
+                <div>
+                  <p
+                    style={{
+                      color: "#777",
+                      fontSize: "12px",
+                      textTransform: "uppercase",
+                      letterSpacing: "1px",
+                      margin: "0 0 8px 0",
+                    }}
+                  >
+                    Phase 4 — Justice Graph
+                  </p>
+
+                  <h2
+                    style={{
+                      margin: "0 0 8px 0",
+                    }}
+                  >
+                    Justice Graph
+                  </h2>
+
+                  <p
+                    style={{
+                      color: "#888",
+                      margin: 0,
+                      lineHeight: "1.5",
+                    }}
+                  >
+                    Case relationships across people,
+                    organizations, events, issues,
+                    claims, and documents.
+                  </p>
+                </div>
+
+                <button
+                  onClick={() =>
+                    loadJusticeGraph(
+                      result.case_id
+                    )
+                  }
+                  disabled={graphLoading}
+                  style={{
+                    padding: "12px 20px",
+                    fontSize: "14px",
+                    fontWeight: "600",
+                    cursor: graphLoading
+                      ? "not-allowed"
+                      : "pointer",
+                  }}
+                >
+                  {graphLoading
+                    ? "Loading Graph..."
+                    : graph
+                      ? "Refresh Graph"
+                      : "Load Justice Graph"}
+                </button>
+              </div>
+
+              {graphError && (
+                <div
+                  style={{
+                    padding: "16px",
+                    border: "1px solid #633",
+                    borderRadius: "8px",
+                    background: "#180909",
+                    color: "#ffb0b0",
+                    marginBottom: "20px",
+                  }}
+                >
+                  <strong>
+                    Justice Graph failed
+                  </strong>
+
+                  <p style={{ marginBottom: 0 }}>
+                    {graphError}
+                  </p>
+                </div>
+              )}
+
+              {graphLoading && (
+                <div
+                  style={{
+                    padding: "35px",
+                    border: "1px solid #292929",
+                    borderRadius: "8px",
+                    textAlign: "center",
+                    color: "#aaa",
+                    background: "#0b0b0b",
+                  }}
+                >
+                  Loading graph data from the
+                  NYAYAOS backend...
+                </div>
+              )}
+
+              {!graph &&
+                !graphLoading &&
+                !graphError && (
+                  <div
+                    style={{
+                      padding: "35px",
+                      border: "1px dashed #444",
+                      borderRadius: "8px",
+                      textAlign: "center",
+                      color: "#777",
+                    }}
+                  >
+                    Click "Load Justice Graph"
+                    to visualize the structured
+                    case graph.
+                  </div>
+                )}
+
+              {graph && (
+                <>
+                  {/* GRAPH SUMMARY */}
+
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns:
+                        "repeat(auto-fit, minmax(130px, 1fr))",
+                      gap: "10px",
+                      marginBottom: "20px",
+                    }}
+                  >
+                    <div
+                      style={{
+                        border: "1px solid #292929",
+                        borderRadius: "8px",
+                        padding: "14px",
+                        background: "#0b0b0b",
+                      }}
+                    >
+                      <div
+                        style={{
+                          color: "#777",
+                          fontSize: "11px",
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        Nodes
+                      </div>
+
+                      <div
+                        style={{
+                          fontSize: "24px",
+                          fontWeight: "700",
+                          marginTop: "5px",
+                        }}
+                      >
+                        {graph.summary.node_count}
+                      </div>
+                    </div>
+
+                    <div
+                      style={{
+                        border: "1px solid #292929",
+                        borderRadius: "8px",
+                        padding: "14px",
+                        background: "#0b0b0b",
+                      }}
+                    >
+                      <div
+                        style={{
+                          color: "#777",
+                          fontSize: "11px",
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        Relationships
+                      </div>
+
+                      <div
+                        style={{
+                          fontSize: "24px",
+                          fontWeight: "700",
+                          marginTop: "5px",
+                        }}
+                      >
+                        {graph.summary.edge_count}
+                      </div>
+                    </div>
+
+                    {(() => {
+                      const coverage =
+                        getEvidenceCoverage();
+
+                      return (
+                        <div
+                          style={{
+                            border: "1px solid #292929",
+                            borderRadius: "8px",
+                            padding: "14px",
+                            background: "#0b0b0b",
+                          }}
+                        >
+                          <div
+                            style={{
+                              color: "#777",
+                              fontSize: "11px",
+                              textTransform: "uppercase",
+                            }}
+                          >
+                            Evidence Coverage
+                          </div>
+
+                          <div
+                            style={{
+                              fontSize: "24px",
+                              fontWeight: "700",
+                              marginTop: "5px",
+                              color:
+                                coverage?.percentage ===
+                                  100
+                                  ? "#4ade80"
+                                  : "#fbbf24",
+                            }}
+                          >
+                            {coverage?.percentage ?? 0}%
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* NODE TYPE SUMMARY */}
+
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: "8px",
+                      flexWrap: "wrap",
+                      marginBottom: "20px",
+                    }}
+                  >
+                    {Object.entries(
+                      graph.summary.node_counts
+                    ).map(([type, count]) => {
+                      const style =
+                        getGraphNodeStyle(type);
+
+                      return (
+                        <div
+                          key={type}
+                          style={{
+                            padding: "7px 10px",
+                            border:
+                              `1px solid ${style.border}`,
+                            borderRadius: "20px",
+                            color: style.accent,
+                            fontSize: "12px",
+                          }}
+                        >
+                          {formatLabel(type)}: {count}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* GRAPH CANVAS */}
+
+                  <div
+                    style={{
+                      position: "relative",
+                      height: "680px",
+                      overflow: "auto",
+                      border: "1px solid #222",
+                      borderRadius: "10px",
+                      background:
+                        "radial-gradient(circle at center, #111 0%, #070707 55%, #050505 100%)",
+                    }}
+                  >
+                    {(() => {
+                      const graphWidth = Math.max(
+                        1650,
+                        7 * 230
+                      );
+
+                      const maxRows = Math.max(
+                        ...Object.values(
+                          graph.summary.node_counts
+                        ),
+                        1
+                      );
+
+                      const graphHeight = Math.max(
+                        620,
+                        120 + maxRows * 135
+                      );
+
+                      return (
+                        <svg
+                          width={graphWidth}
+                          height={graphHeight}
+                          style={{
+                            display: "block",
+                            minWidth: "100%",
+                          }}
+                        >
+                          {/* RELATIONSHIPS */}
+
+                          {graph.edges.map((edge) => {
+                            const source =
+                              graph.nodes.find(
+                                (node) =>
+                                  node.node_id ===
+                                  edge.source_node_id
+                              );
+
+                            const target =
+                              graph.nodes.find(
+                                (node) =>
+                                  node.node_id ===
+                                  edge.target_node_id
+                              );
+
+                            if (!source || !target) {
+                              return null;
+                            }
+
+                            const sourcePos =
+                              getGraphPosition(
+                                source,
+                                graph.nodes
+                              );
+
+                            const targetPos =
+                              getGraphPosition(
+                                target,
+                                graph.nodes
+                              );
+
+                            const edgeStyle =
+                              getGraphEdgeStatus(
+                                edge
+                              );
+
+                            return (
+                              <g key={edge.edge_id}>
+                                <line
+                                  x1={sourcePos.x + 190}
+                                  y1={sourcePos.y + 45}
+                                  x2={targetPos.x}
+                                  y2={targetPos.y + 45}
+                                  stroke={
+                                    edgeStyle.stroke
+                                  }
+                                  strokeWidth={
+                                    edgeStyle.width
+                                  }
+                                  opacity="0.75"
+                                />
+
+                                <text
+                                  x={
+                                    (sourcePos.x +
+                                      190 +
+                                      targetPos.x) /
+                                    2
+                                  }
+                                  y={
+                                    (sourcePos.y +
+                                      targetPos.y) /
+                                    2 +
+                                    40
+                                  }
+                                  fill={
+                                    edgeStyle.stroke
+                                  }
+                                  fontSize="10"
+                                  textAnchor="middle"
+                                >
+                                  {edgeStyle.label}
+                                </text>
+                              </g>
+                            );
+                          })}
+
+                          {/* NODES */}
+
+                          {graph.nodes.map((node) => {
+                            const position =
+                              getGraphPosition(
+                                node,
+                                graph.nodes
+                              );
+
+                            const style =
+                              getGraphNodeStyle(
+                                node.node_type
+                              );
+
+                            const selected =
+                              selectedGraphNode?.node_id ===
+                              node.node_id;
+
+                            return (
+                              <g
+                                key={node.node_id}
+                                transform={`translate(${position.x}, ${position.y})`}
+                                onClick={() =>
+                                  setSelectedGraphNode(
+                                    node
+                                  )
+                                }
+                                style={{
+                                  cursor: "pointer",
+                                }}
+                              >
+                                <rect
+                                  width="190"
+                                  height="90"
+                                  rx="10"
+                                  fill={
+                                    style.background
+                                  }
+                                  stroke={
+                                    selected
+                                      ? "#fff"
+                                      : style.border
+                                  }
+                                  strokeWidth={
+                                    selected ? 3 : 1.5
+                                  }
+                                />
+
+                                <rect
+                                  width="190"
+                                  height="5"
+                                  rx="3"
+                                  fill={
+                                    style.accent
+                                  }
+                                />
+
+                                <text
+                                  x="12"
+                                  y="25"
+                                  fill={
+                                    style.accent
+                                  }
+                                  fontSize="10"
+                                  fontWeight="700"
+                                >
+                                  {node.node_type}
+                                </text>
+
+                                <foreignObject
+                                  x="12"
+                                  y="32"
+                                  width="166"
+                                  height="48"
+                                >
+                                  <div
+                                    style={{
+                                      color: "#eee",
+                                      fontSize: "12px",
+                                      lineHeight: "1.35",
+                                      overflow: "hidden",
+                                      wordBreak:
+                                        "break-word",
+                                    }}
+                                  >
+                                    {node.label}
+                                  </div>
+                                </foreignObject>
+                              </g>
+                            );
+                          })}
+                        </svg>
+                      );
+                    })()}
+                  </div>
+
+                  {/* SELECTED NODE */}
+
+                  {selectedGraphNode && (
+                    <div
+                      style={{
+                        marginTop: "18px",
+                        padding: "20px",
+                        border: "1px solid #333",
+                        borderRadius: "8px",
+                        background: "#0b0b0b",
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent:
+                            "space-between",
+                          alignItems: "center",
+                          gap: "15px",
+                        }}
+                      >
+                        <div>
+                          <div
+                            style={{
+                              color:
+                                getGraphNodeStyle(
+                                  selectedGraphNode.node_type
+                                ).accent,
+                              fontSize: "11px",
+                              fontWeight: "700",
+                              letterSpacing: "1px",
+                            }}
+                          >
+                            {
+                              selectedGraphNode.node_type
+                            }
+                          </div>
+
+                          <h3
+                            style={{
+                              margin:
+                                "5px 0 0 0",
+                            }}
+                          >
+                            {
+                              selectedGraphNode.label
+                            }
+                          </h3>
+                        </div>
+
+                        <button
+                          onClick={() =>
+                            setSelectedGraphNode(
+                              null
+                            )
+                          }
+                          style={{
+                            padding: "7px 12px",
+                          }}
+                        >
+                          Close
+                        </button>
+                      </div>
+
+                      {Object.keys(
+                        selectedGraphNode.properties ||
+                        {}
+                      ).length > 0 && (
+                          <div
+                            style={{
+                              marginTop: "15px",
+                              display: "flex",
+                              flexDirection:
+                                "column",
+                              gap: "8px",
+                            }}
+                          >
+                            {Object.entries(
+                              selectedGraphNode.properties
+                            ).map(
+                              ([key, value]) => (
+                                <div
+                                  key={key}
+                                  style={{
+                                    display: "grid",
+                                    gridTemplateColumns:
+                                      "180px 1fr",
+                                    gap: "12px",
+                                  }}
+                                >
+                                  <span
+                                    style={{
+                                      color: "#777",
+                                      fontWeight: "600",
+                                    }}
+                                  >
+                                    {formatLabel(key)}
+                                  </span>
+
+                                  <span
+                                    style={{
+                                      color: "#ccc",
+                                      lineHeight: "1.5",
+                                    }}
+                                  >
+                                    {formatValue(value)}
+                                  </span>
+                                </div>
+                              )
+                            )}
+                          </div>
+                        )}
+                    </div>
+                  )}
+
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: "15px",
+                      flexWrap: "wrap",
+                      marginTop: "18px",
+                      color: "#888",
+                      fontSize: "12px",
+                    }}
+                  >
+                    <span>
+                      Green SUPPORTS = supported evidence
+                    </span>
+
+                    <span>
+                      Yellow SUPPORTS = partial evidence
+                    </span>
+
+                    <span>
+                      Click any node for details
+                    </span>
+                  </div>
+                </>
+              )}
+            </section>
+
+            {/* ==================================================
+                EVIDENCE GRAPH
+            ================================================== */}
+
+            <section
+              style={{
+                padding: "30px",
+                border: "1px solid #444",
+                borderRadius: "10px",
+                marginBottom: "30px",
+                background: "#080808",
+              }}
+            >
+              <div
+                style={{
+                  marginBottom: "22px",
+                }}
+              >
+                <p
+                  style={{
+                    color: "#777",
+                    fontSize: "12px",
+                    textTransform: "uppercase",
+                    letterSpacing: "1px",
+                    margin: "0 0 8px 0",
+                  }}
+                >
+                  Phase 4 — Evidence Graph
+                </p>
+
+                <h2
+                  style={{
+                    margin: "0 0 8px 0",
+                  }}
+                >
+                  Evidence Graph
+                </h2>
+
+                <p
+                  style={{
+                    color: "#888",
+                    margin: 0,
+                    lineHeight: "1.5",
+                  }}
+                >
+                  Shows which submitted documents support
+                  each extracted claim and the strength of
+                  that relationship.
+                </p>
+              </div>
+
+              {!graph && (
+                <div
+                  style={{
+                    padding: "30px",
+                    border: "1px dashed #444",
+                    borderRadius: "8px",
+                    textAlign: "center",
+                    color: "#777",
+                  }}
+                >
+                  Load the Justice Graph above first.
+                  The Evidence Graph uses the same
+                  verified graph relationships.
+                </div>
+              )}
+
+              {graph && (
+                (() => {
+                  const evidenceGraph =
+                    getEvidenceGraphData();
+
+                  return (
+                    <>
+                      {/* EVIDENCE SUMMARY */}
+
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns:
+                            "repeat(auto-fit, minmax(150px, 1fr))",
+                          gap: "10px",
+                          marginBottom: "20px",
+                        }}
+                      >
+                        <div
+                          style={{
+                            padding: "15px",
+                            border:
+                              "1px solid #292929",
+                            borderRadius: "8px",
+                            background: "#0b0b0b",
+                          }}
+                        >
+                          <div
+                            style={{
+                              color: "#777",
+                              fontSize: "11px",
+                              textTransform:
+                                "uppercase",
+                            }}
+                          >
+                            Evidence Documents
+                          </div>
+
+                          <div
+                            style={{
+                              fontSize: "24px",
+                              fontWeight: "700",
+                              marginTop: "5px",
+                            }}
+                          >
+                            {
+                              evidenceGraph.documents
+                                .length
+                            }
+                          </div>
+                        </div>
+
+                        <div
+                          style={{
+                            padding: "15px",
+                            border:
+                              "1px solid #292929",
+                            borderRadius: "8px",
+                            background: "#0b0b0b",
+                          }}
+                        >
+                          <div
+                            style={{
+                              color: "#777",
+                              fontSize: "11px",
+                              textTransform:
+                                "uppercase",
+                            }}
+                          >
+                            Claims
+                          </div>
+
+                          <div
+                            style={{
+                              fontSize: "24px",
+                              fontWeight: "700",
+                              marginTop: "5px",
+                            }}
+                          >
+                            {
+                              evidenceGraph.claims
+                                .length
+                            }
+                          </div>
+                        </div>
+
+                        <div
+                          style={{
+                            padding: "15px",
+                            border:
+                              "1px solid #292929",
+                            borderRadius: "8px",
+                            background: "#0b0b0b",
+                          }}
+                        >
+                          <div
+                            style={{
+                              color: "#777",
+                              fontSize: "11px",
+                              textTransform:
+                                "uppercase",
+                            }}
+                          >
+                            Evidence Links
+                          </div>
+
+                          <div
+                            style={{
+                              fontSize: "24px",
+                              fontWeight: "700",
+                              marginTop: "5px",
+                            }}
+                          >
+                            {
+                              evidenceGraph
+                                .relationships
+                                .length
+                            }
+                          </div>
+                        </div>
+
+                        {(() => {
+                          const coverage =
+                            getEvidenceCoverage();
+
+                          return (
+                            <div
+                              style={{
+                                padding: "15px",
+                                border:
+                                  "1px solid #292929",
+                                borderRadius: "8px",
+                                background:
+                                  "#0b0b0b",
+                              }}
+                            >
+                              <div
+                                style={{
+                                  color: "#777",
+                                  fontSize: "11px",
+                                  textTransform:
+                                    "uppercase",
+                                }}
+                              >
+                                Coverage
+                              </div>
+
+                              <div
+                                style={{
+                                  fontSize: "24px",
+                                  fontWeight: "700",
+                                  marginTop: "5px",
+                                  color:
+                                    coverage?.percentage ===
+                                      100
+                                      ? "#4ade80"
+                                      : "#fbbf24",
+                                }}
+                              >
+                                {coverage?.percentage ??
+                                  0}
+                                %
+                              </div>
+                            </div>
+                          );
+                        })()}
+                      </div>
+
+                      {/* DOCUMENT → CLAIM MAPPING */}
+
+                      <div
+                        style={{
+                          display: "flex",
+                          flexDirection:
+                            "column",
+                          gap: "12px",
+                        }}
+                      >
+                        {evidenceGraph.claims.map(
+                          (claim) => {
+                            const claimRelationships =
+                              evidenceGraph.relationships.filter(
+                                (edge) =>
+                                  edge.target_node_id ===
+                                  claim.node_id
+                              );
+
+                            const strongestConfidence =
+                              claimRelationships
+                                .length > 0
+                                ? Math.max(
+                                  ...claimRelationships.map(
+                                    (edge) =>
+                                      Number(
+                                        edge.confidence ||
+                                        0
+                                      )
+                                  )
+                                )
+                                : 0;
+
+                            let status =
+                              "MISSING";
+
+                            if (
+                              strongestConfidence >=
+                              0.7
+                            ) {
+                              status =
+                                "SUPPORTED";
+                            } else if (
+                              strongestConfidence >=
+                              0.4
+                            ) {
+                              status =
+                                "PARTIAL";
+                            }
+
+                            const statusStyle =
+                              status ===
+                                "SUPPORTED"
+                                ? {
+                                  border:
+                                    "#4ade80",
+                                  background:
+                                    "#0b1710",
+                                  text:
+                                    "#4ade80",
+                                }
+                                : status ===
+                                  "PARTIAL"
+                                  ? {
+                                    border:
+                                      "#fbbf24",
+                                    background:
+                                      "#171307",
+                                    text:
+                                      "#fbbf24",
+                                  }
+                                  : {
+                                    border:
+                                      "#fb7185",
+                                    background:
+                                      "#1a0b10",
+                                    text:
+                                      "#fb7185",
+                                  };
+
+                            return (
+                              <div
+                                key={
+                                  claim.node_id
+                                }
+                                style={{
+                                  border:
+                                    "1px solid #292929",
+                                  borderRadius:
+                                    "10px",
+                                  padding:
+                                    "18px",
+                                  background:
+                                    "#090909",
+                                }}
+                              >
+                                {/* CLAIM HEADER */}
+
+                                <div
+                                  style={{
+                                    display:
+                                      "flex",
+                                    justifyContent:
+                                      "space-between",
+                                    alignItems:
+                                      "flex-start",
+                                    gap: "15px",
+                                  }}
+                                >
+                                  <div>
+                                    <div
+                                      style={{
+                                        color:
+                                          "#c084fc",
+                                        fontSize:
+                                          "11px",
+                                        fontWeight:
+                                          "700",
+                                        letterSpacing:
+                                          "1px",
+                                      }}
+                                    >
+                                      CLAIM
+                                    </div>
+
+                                    <div
+                                      style={{
+                                        color:
+                                          "#eee",
+                                        fontSize:
+                                          "15px",
+                                        fontWeight:
+                                          "600",
+                                        lineHeight:
+                                          "1.5",
+                                        marginTop:
+                                          "5px",
+                                      }}
+                                    >
+                                      {
+                                        claim.label
+                                      }
+                                    </div>
+                                  </div>
+
+                                  <div
+                                    style={{
+                                      flexShrink:
+                                        0,
+                                      padding:
+                                        "6px 10px",
+                                      border:
+                                        `1px solid ${statusStyle.border}`,
+                                      borderRadius:
+                                        "20px",
+                                      background:
+                                        statusStyle.background,
+                                      color:
+                                        statusStyle.text,
+                                      fontSize:
+                                        "11px",
+                                      fontWeight:
+                                        "700",
+                                    }}
+                                  >
+                                    {status}
+                                  </div>
+                                </div>
+
+                                {/* EVIDENCE LINKS */}
+
+                                <div
+                                  style={{
+                                    marginTop:
+                                      "16px",
+                                    display:
+                                      "flex",
+                                    flexDirection:
+                                      "column",
+                                    gap: "8px",
+                                  }}
+                                >
+                                  {claimRelationships.length ===
+                                    0 ? (
+                                    <div
+                                      style={{
+                                        padding:
+                                          "12px",
+                                        border:
+                                          "1px dashed #633",
+                                        borderRadius:
+                                          "7px",
+                                        color:
+                                          "#ffb0b0",
+                                        fontSize:
+                                          "13px",
+                                      }}
+                                    >
+                                      No supporting
+                                      evidence
+                                      relationship
+                                      found for
+                                      this claim.
+                                    </div>
+                                  ) : (
+                                    claimRelationships.map(
+                                      (edge) => {
+                                        const document =
+                                          evidenceGraph.documents.find(
+                                            (
+                                              item
+                                            ) =>
+                                              item.node_id ===
+                                              edge.source_node_id
+                                          );
+
+                                        const confidence =
+                                          Number(
+                                            edge.confidence ||
+                                            0
+                                          );
+
+                                        return (
+                                          <div
+                                            key={
+                                              edge.edge_id
+                                            }
+                                            style={{
+                                              display:
+                                                "grid",
+                                              gridTemplateColumns:
+                                                "1fr auto auto",
+                                              alignItems:
+                                                "center",
+                                              gap:
+                                                "12px",
+                                              padding:
+                                                "12px",
+                                              border:
+                                                "1px solid #222",
+                                              borderRadius:
+                                                "7px",
+                                              background:
+                                                "#050505",
+                                            }}
+                                          >
+                                            <div>
+                                              <div
+                                                style={{
+                                                  color:
+                                                    "#22d3ee",
+                                                  fontSize:
+                                                    "12px",
+                                                  fontWeight:
+                                                    "600",
+                                                }}
+                                              >
+                                                {document
+                                                  ?.label ||
+                                                  "Evidence document"}
+                                              </div>
+
+                                              <div
+                                                style={{
+                                                  color:
+                                                    "#666",
+                                                  fontSize:
+                                                    "11px",
+                                                  marginTop:
+                                                    "4px",
+                                                }}
+                                              >
+                                                DOCUMENT
+                                                {" → "}
+                                                SUPPORTS
+                                                {" → "}
+                                                CLAIM
+                                              </div>
+                                            </div>
+
+                                            <div
+                                              style={{
+                                                color:
+                                                  confidence >=
+                                                    0.7
+                                                    ? "#4ade80"
+                                                    : confidence >=
+                                                      0.4
+                                                      ? "#fbbf24"
+                                                      : "#fb7185",
+                                                fontSize:
+                                                  "12px",
+                                                fontWeight:
+                                                  "700",
+                                              }}
+                                            >
+                                              {Math.round(
+                                                confidence *
+                                                100
+                                              )}
+                                              %
+                                            </div>
+
+                                            <div
+                                              style={{
+                                                color:
+                                                  "#777",
+                                                fontSize:
+                                                  "11px",
+                                              }}
+                                            >
+                                              {isObject(
+                                                edge.properties
+                                              ) &&
+                                                typeof edge
+                                                  .properties
+                                                  .evidence_status ===
+                                                "string"
+                                                ? String(
+                                                  edge
+                                                    .properties
+                                                    .evidence_status
+                                                )
+                                                : "UNCLASSIFIED"}
+                                            </div>
+                                          </div>
+                                        );
+                                      }
+                                    )
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          }
+                        )}
+
+                        {evidenceGraph.claims
+                          .length === 0 && (
+                            <div
+                              style={{
+                                padding: "30px",
+                                border:
+                                  "1px dashed #444",
+                                borderRadius: "8px",
+                                textAlign: "center",
+                                color: "#777",
+                              }}
+                            >
+                              No claim nodes are
+                              available in the graph.
+                            </div>
+                          )}
+                      </div>
+
+                      {/* EVIDENCE GRAPH NOTE */}
+
+                      <div
+                        style={{
+                          marginTop: "18px",
+                          padding: "15px",
+                          border:
+                            "1px solid #292929",
+                          borderRadius: "8px",
+                          background: "#070707",
+                          color: "#777",
+                          fontSize: "12px",
+                          lineHeight: "1.6",
+                        }}
+                      >
+                        Evidence status is derived
+                        from the graph's SUPPORTS
+                        relationships and their
+                        confidence values. It does not
+                        represent a final legal
+                        determination.
+                      </div>
+                    </>
+                  );
+                })()
+              )}
             </section>
 
             {/* ==================================================
