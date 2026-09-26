@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.api.routes import router
+from app.api.legal import router as legal_router
 
 
 app = FastAPI(
@@ -19,7 +20,6 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
 
-    # Local development origins
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
@@ -39,6 +39,7 @@ app.add_middleware(
 # ============================================================
 
 app.include_router(router)
+app.include_router(legal_router)
 
 
 # ============================================================

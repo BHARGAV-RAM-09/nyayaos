@@ -92,6 +92,70 @@ type GraphResult = {
 };
 
 // ============================================================
+// LEGAL INFORMATION TYPES
+// ============================================================
+
+type LegalCitation = {
+  section_number?: string;
+  section_title?: string;
+  source_id?: string;
+  source_title?: string;
+  citation?: string;
+  jurisdiction?: string;
+  source_url?: string;
+};
+
+type LegalProvenance = {
+  source_id?: string;
+  source_title?: string;
+  authority?: string;
+  citation?: string;
+  source_url?: string;
+  version_date?: string | null;
+  status?: string;
+  verification?: {
+    verified_source?: boolean;
+    citation_verified?: boolean;
+    url_present?: boolean;
+  };
+};
+
+type LegalResult = {
+  chunk_id?: string;
+  source_id?: string;
+  section_number?: string;
+  section_title?: string;
+  content?: string;
+  jurisdiction?: string;
+  legal_domain?: string | null;
+  legal_category?: string | null;
+  similarity?: number;
+  citation?: LegalCitation;
+  provenance?: LegalProvenance;
+  citation_status?: string;
+};
+
+type LegalInformation = {
+  case_id: string;
+  jurisdiction?: string;
+  legal_domain?: string | null;
+  query?: string;
+  result_count?: number;
+  results?: LegalResult[];
+  issue_summary?: string;
+  legal_analysis?: string;
+  relevant_sections?: Array<{
+    section_number?: string;
+    section_title?: string;
+    source_id?: string;
+    jurisdiction?: string;
+    explanation?: string;
+  }>;
+  limitations?: string[];
+  needs_human_review?: boolean;
+};
+
+// ============================================================
 // GENERIC HELPERS
 // ============================================================
 
@@ -429,6 +493,19 @@ export default function Home() {
     useState(false);
 
   // ==========================================================
+  // LEGAL INFORMATION STATE
+  // ==========================================================
+
+  const [legalInfo, setLegalInfo] =
+    useState<LegalInformation | null>(null);
+
+  const [legalLoading, setLegalLoading] =
+    useState(false);
+
+  const [legalError, setLegalError] =
+    useState("");
+
+  // ==========================================================
   // CREATE CASE
   // ==========================================================
 
@@ -451,6 +528,8 @@ export default function Home() {
     setGraph(null);
     setGraphError("");
     setSelectedGraphNode(null);
+    setLegalInfo(null);
+    setLegalError("");
 
     try {
       const response = await fetch(
@@ -571,6 +650,8 @@ export default function Home() {
       setGraph(null);
       setGraphError("");
       setSelectedGraphNode(null);
+      setLegalInfo(null);
+      setLegalError("");
 
       await loadEvidence(
         result.case_id
@@ -771,6 +852,63 @@ export default function Home() {
 
 
   // ==========================================================
+  // LOAD LEGAL INFORMATION
+  // ==========================================================
+
+  async function loadLegalInformation(
+    caseId: string
+  ) {
+    if (!caseId) {
+      return;
+    }
+
+    setLegalLoading(true);
+    setLegalError("");
+    setLegalInfo(null);
+
+    try {
+      const response = await fetch(
+        `${API_URL}/api/legal/case/${caseId}`,
+        {
+          method: "GET",
+          cache: "no-store",
+          headers: {
+            Accept: "application/json",
+          },
+        }
+      );
+
+      const data =
+        await response.json().catch(
+          () => null
+        );
+
+      if (!response.ok) {
+        throw new Error(
+          data?.detail ||
+          "Failed to retrieve legal information."
+        );
+      }
+
+      setLegalInfo(data);
+    } catch (error) {
+      console.error(
+        "Legal information error:",
+        error
+      );
+
+      setLegalError(
+        error instanceof Error
+          ? error.message
+          : "Failed to retrieve legal information."
+      );
+    } finally {
+      setLegalLoading(false);
+    }
+  }
+
+
+  // ==========================================================
   // LOAD EXISTING CASE
   // ==========================================================
 
@@ -865,6 +1003,7 @@ export default function Home() {
       setGraph(graphData);
 
       await loadEvidence(caseId);
+      await loadLegalInformation(caseId);
     } catch (error) {
       console.error(
         "Existing case loading error:",
@@ -3897,6 +4036,653 @@ export default function Home() {
               </section>
             )}
           </>
+        )}
+
+        {/* ==================================================
+            LEGAL INFORMATION
+        ================================================== */}
+
+        {result && (
+          <section
+            style={{
+              padding: "30px",
+              border: "1px solid #444",
+              borderRadius: "10px",
+              marginBottom: "30px",
+              background: "#080808",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+                gap: "20px",
+                flexWrap: "wrap",
+                marginBottom: "22px",
+              }}
+            >
+              <div>
+                <p
+                  style={{
+                    color: "#777",
+                    fontSize: "12px",
+                    textTransform: "uppercase",
+                    letterSpacing: "1px",
+                    margin: "0 0 8px 0",
+                  }}
+                >
+                  Phase 5 — Legal Knowledge + RAG
+                </p>
+
+                <h2
+                  style={{
+                    margin: "0 0 8px 0",
+                  }}
+                >
+                  Legal Information
+                </h2>
+
+                <p
+                  style={{
+                    color: "#888",
+                    margin: 0,
+                    lineHeight: "1.6",
+                  }}
+                >
+                  Relevant legal material retrieved from the
+                  NYAYAOS legal knowledge base, with citation
+                  and source provenance attached to each result.
+                </p>
+              </div>
+
+              <button
+                onClick={() =>
+                  loadLegalInformation(result.case_id)
+                }
+                disabled={legalLoading}
+                style={{
+                  padding: "12px 20px",
+                  fontSize: "14px",
+                  fontWeight: "600",
+                  cursor: legalLoading
+                    ? "not-allowed"
+                    : "pointer",
+                }}
+              >
+                {legalLoading
+                  ? "Retrieving Legal Information..."
+                  : legalInfo
+                    ? "Refresh Legal Information"
+                    : "Retrieve Legal Information"}
+              </button>
+            </div>
+
+            {legalError && (
+              <div
+                style={{
+                  padding: "16px",
+                  border: "1px solid #633",
+                  borderRadius: "8px",
+                  background: "#180909",
+                  color: "#ffb0b0",
+                  marginBottom: "20px",
+                }}
+              >
+                <strong>
+                  Legal retrieval failed
+                </strong>
+
+                <p
+                  style={{
+                    marginBottom: 0,
+                  }}
+                >
+                  {legalError}
+                </p>
+              </div>
+            )}
+
+            {legalLoading && (
+              <div
+                style={{
+                  padding: "30px",
+                  border: "1px solid #292929",
+                  borderRadius: "8px",
+                  textAlign: "center",
+                  color: "#aaa",
+                  background: "#0b0b0b",
+                }}
+              >
+                Retrieving jurisdiction-aware legal material
+                and resolving citation provenance...
+              </div>
+            )}
+
+            {!legalLoading &&
+              !legalInfo &&
+              !legalError && (
+                <div
+                  style={{
+                    padding: "30px",
+                    border: "1px dashed #444",
+                    borderRadius: "8px",
+                    textAlign: "center",
+                    color: "#777",
+                  }}
+                >
+                  Click "Retrieve Legal Information" to search
+                  the verified legal knowledge base for this case.
+                </div>
+              )}
+
+            {legalInfo && (
+              <>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns:
+                      "repeat(auto-fit, minmax(160px, 1fr))",
+                    gap: "10px",
+                    marginBottom: "20px",
+                  }}
+                >
+                  <div
+                    style={{
+                      border: "1px solid #292929",
+                      borderRadius: "8px",
+                      padding: "15px",
+                      background: "#0b0b0b",
+                    }}
+                  >
+                    <div
+                      style={{
+                        color: "#777",
+                        fontSize: "11px",
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      Jurisdiction
+                    </div>
+
+                    <div
+                      style={{
+                        fontSize: "20px",
+                        fontWeight: "700",
+                        marginTop: "6px",
+                      }}
+                    >
+                      {legalInfo.jurisdiction || "—"}
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      border: "1px solid #292929",
+                      borderRadius: "8px",
+                      padding: "15px",
+                      background: "#0b0b0b",
+                    }}
+                  >
+                    <div
+                      style={{
+                        color: "#777",
+                        fontSize: "11px",
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      Legal Domain
+                    </div>
+
+                    <div
+                      style={{
+                        fontSize: "15px",
+                        fontWeight: "700",
+                        marginTop: "6px",
+                        color: "#ddd",
+                      }}
+                    >
+                      {legalInfo.legal_domain || "Not specified"}
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      border: "1px solid #292929",
+                      borderRadius: "8px",
+                      padding: "15px",
+                      background: "#0b0b0b",
+                    }}
+                  >
+                    <div
+                      style={{
+                        color: "#777",
+                        fontSize: "11px",
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      Retrieved Sources
+                    </div>
+
+                    <div
+                      style={{
+                        fontSize: "24px",
+                        fontWeight: "700",
+                        marginTop: "6px",
+                      }}
+                    >
+                      {legalInfo.result_count ??
+                        legalInfo.results?.length ??
+                        0}
+                    </div>
+                  </div>
+                </div>
+
+                {legalInfo.query && (
+                  <div
+                    style={{
+                      marginBottom: "20px",
+                      padding: "15px",
+                      border: "1px solid #292929",
+                      borderRadius: "8px",
+                      background: "#070707",
+                    }}
+                  >
+                    <div
+                      style={{
+                        color: "#777",
+                        fontSize: "11px",
+                        textTransform: "uppercase",
+                        marginBottom: "8px",
+                      }}
+                    >
+                      Retrieval Query
+                    </div>
+
+                    <pre
+                      style={{
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                        color: "#ccc",
+                        fontFamily: "Arial, sans-serif",
+                        fontSize: "13px",
+                        lineHeight: "1.6",
+                        margin: 0,
+                      }}
+                    >
+                      {legalInfo.query}
+                    </pre>
+                  </div>
+                )}
+
+                {legalInfo.results &&
+                  legalInfo.results.length > 0 ? (
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "14px",
+                    }}
+                  >
+                    {legalInfo.results.map(
+                      (item, index) => {
+                        const citation =
+                          item.citation || {};
+
+                        const provenance =
+                          item.provenance || {};
+
+                        const similarity =
+                          typeof item.similarity === "number"
+                            ? item.similarity
+                            : null;
+
+                        return (
+                          <article
+                            key={
+                              item.chunk_id ||
+                              `${item.source_id}-${item.section_number}-${index}`
+                            }
+                            style={{
+                              border: "1px solid #292929",
+                              borderRadius: "10px",
+                              padding: "20px",
+                              background: "#090909",
+                            }}
+                          >
+                            <div
+                              style={{
+                                display: "flex",
+                                justifyContent: "space-between",
+                                alignItems: "flex-start",
+                                gap: "15px",
+                                flexWrap: "wrap",
+                              }}
+                            >
+                              <div>
+                                <div
+                                  style={{
+                                    color: "#60a5fa",
+                                    fontSize: "12px",
+                                    fontWeight: "700",
+                                    letterSpacing: "1px",
+                                  }}
+                                >
+                                  SECTION{" "}
+                                  {item.section_number || "—"}
+                                </div>
+
+                                <h3
+                                  style={{
+                                    margin: "6px 0 5px 0",
+                                    color: "#eee",
+                                  }}
+                                >
+                                  {item.section_title ||
+                                    citation.section_title ||
+                                    "Legal provision"}
+                                </h3>
+
+                                <p
+                                  style={{
+                                    margin: 0,
+                                    color: "#888",
+                                    fontSize: "13px",
+                                  }}
+                                >
+                                  {citation.source_title ||
+                                    provenance.source_title ||
+                                    "Legal source"}
+                                  {" • "}
+                                  {citation.citation ||
+                                    provenance.citation ||
+                                    "Citation unavailable"}
+                                </p>
+                              </div>
+
+                              <div
+                                style={{
+                                  display: "flex",
+                                  gap: "8px",
+                                  flexWrap: "wrap",
+                                }}
+                              >
+                                <span
+                                  style={{
+                                    padding: "6px 10px",
+                                    border: "1px solid #4ade80",
+                                    borderRadius: "20px",
+                                    color: "#4ade80",
+                                    fontSize: "11px",
+                                    fontWeight: "700",
+                                  }}
+                                >
+                                  {item.citation_status ||
+                                    "CITATION"}
+                                </span>
+
+                                {similarity !== null && (
+                                  <span
+                                    style={{
+                                      padding: "6px 10px",
+                                      border: "1px solid #444",
+                                      borderRadius: "20px",
+                                      color: "#aaa",
+                                      fontSize: "11px",
+                                    }}
+                                  >
+                                    Similarity{" "}
+                                    {Math.round(
+                                      similarity * 100
+                                    )}
+                                    %
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            <div
+                              style={{
+                                marginTop: "18px",
+                                padding: "15px",
+                                border: "1px solid #222",
+                                borderRadius: "7px",
+                                background: "#050505",
+                              }}
+                            >
+                              <div
+                                style={{
+                                  color: "#777",
+                                  fontSize: "11px",
+                                  textTransform: "uppercase",
+                                  marginBottom: "8px",
+                                }}
+                              >
+                                Retrieved Legal Text
+                              </div>
+
+                              <p
+                                style={{
+                                  color: "#ccc",
+                                  lineHeight: "1.7",
+                                  whiteSpace: "pre-wrap",
+                                  margin: 0,
+                                  fontSize: "14px",
+                                }}
+                              >
+                                {item.content ||
+                                  "No legal text returned."}
+                              </p>
+                            </div>
+
+                            <div
+                              style={{
+                                marginTop: "14px",
+                                display: "grid",
+                                gridTemplateColumns:
+                                  "repeat(auto-fit, minmax(220px, 1fr))",
+                                gap: "10px",
+                              }}
+                            >
+                              <div
+                                style={{
+                                  padding: "12px",
+                                  border: "1px solid #222",
+                                  borderRadius: "7px",
+                                  background: "#070707",
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    color: "#666",
+                                    fontSize: "11px",
+                                    textTransform: "uppercase",
+                                  }}
+                                >
+                                  Authority
+                                </div>
+
+                                <div
+                                  style={{
+                                    color: "#ccc",
+                                    marginTop: "5px",
+                                    fontSize: "13px",
+                                  }}
+                                >
+                                  {provenance.authority ||
+                                    "—"}
+                                </div>
+                              </div>
+
+                              <div
+                                style={{
+                                  padding: "12px",
+                                  border: "1px solid #222",
+                                  borderRadius: "7px",
+                                  background: "#070707",
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    color: "#666",
+                                    fontSize: "11px",
+                                    textTransform: "uppercase",
+                                  }}
+                                >
+                                  Jurisdiction
+                                </div>
+
+                                <div
+                                  style={{
+                                    color: "#ccc",
+                                    marginTop: "5px",
+                                    fontSize: "13px",
+                                  }}
+                                >
+                                  {item.jurisdiction ||
+                                    citation.jurisdiction ||
+                                    "—"}
+                                </div>
+                              </div>
+
+                              <div
+                                style={{
+                                  padding: "12px",
+                                  border: "1px solid #222",
+                                  borderRadius: "7px",
+                                  background: "#070707",
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    color: "#666",
+                                    fontSize: "11px",
+                                    textTransform: "uppercase",
+                                  }}
+                                >
+                                  Source Verification
+                                </div>
+
+                                <div
+                                  style={{
+                                    color:
+                                      provenance.verification
+                                        ?.verified_source
+                                        ? "#4ade80"
+                                        : "#fbbf24",
+                                    marginTop: "5px",
+                                    fontSize: "13px",
+                                    fontWeight: "700",
+                                  }}
+                                >
+                                  {provenance.verification
+                                    ?.verified_source
+                                    ? "VERIFIED SOURCE"
+                                    : "VERIFY SOURCE"}
+                                </div>
+                              </div>
+                            </div>
+
+                            {(citation.source_url ||
+                              provenance.source_url) && (
+                                <div
+                                  style={{
+                                    marginTop: "14px",
+                                  }}
+                                >
+                                  <a
+                                    href={
+                                      citation.source_url ||
+                                      provenance.source_url
+                                    }
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    style={{
+                                      color: "#60a5fa",
+                                      fontSize: "13px",
+                                    }}
+                                  >
+                                    Open Official Source
+                                  </a>
+                                </div>
+                              )}
+                          </article>
+                        );
+                      }
+                    )}
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      padding: "30px",
+                      border: "1px dashed #444",
+                      borderRadius: "8px",
+                      textAlign: "center",
+                      color: "#777",
+                    }}
+                  >
+                    No legal material was retrieved for this case.
+                  </div>
+                )}
+
+                {legalInfo.limitations &&
+                  legalInfo.limitations.length > 0 && (
+                    <div
+                      style={{
+                        marginTop: "20px",
+                        padding: "16px",
+                        border: "1px solid #444",
+                        borderRadius: "8px",
+                        background: "#0b0b0b",
+                        color: "#999",
+                        fontSize: "13px",
+                        lineHeight: "1.6",
+                      }}
+                    >
+                      <strong
+                        style={{
+                          color: "#bbb",
+                        }}
+                      >
+                        Retrieval limitations
+                      </strong>
+
+                      <ul
+                        style={{
+                          marginBottom: 0,
+                        }}
+                      >
+                        {legalInfo.limitations.map(
+                          (item, index) => (
+                            <li key={index}>{item}</li>
+                          )
+                        )}
+                      </ul>
+                    </div>
+                  )}
+
+                <div
+                  style={{
+                    marginTop: "20px",
+                    padding: "15px",
+                    border: "1px solid #292929",
+                    borderRadius: "8px",
+                    background: "#070707",
+                    color: "#777",
+                    fontSize: "12px",
+                    lineHeight: "1.6",
+                  }}
+                >
+                  Legal information is retrieved from the
+                  available NYAYAOS legal corpus. A retrieved
+                  provision is not, by itself, a final legal
+                  determination or legal advice. Source citation
+                  and provenance are displayed to preserve
+                  traceability.
+                </div>
+              </>
+            )}
+          </section>
         )}
       </div>
     </main>
