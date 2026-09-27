@@ -896,6 +896,7 @@ Open another terminal:
 
 cd C:\Users\bharg\Documents\NYAYAOS\frontend
 npm run dev
+
 27. Environment Variables
 
 The backend uses environment variables for configuration.
