@@ -11,7 +11,7 @@ from app.services.pdf_service import PDFService
 from app.services.ocr_service import OCRService
 from app.services.ai_extraction_service import AIExtractionService
 from app.services.groq_service import GroqService
-
+from app.services.evidence_packet_service import EvidencePacketService
 
 router = APIRouter(
     prefix="/api",
@@ -3279,5 +3279,840 @@ def get_justice_graph(case_id: str):
             "edge_count": len(edges),
             "node_counts": node_counts,
             "edge_counts": edge_counts
+        }
+    }
+
+
+# ============================================================
+# HUMAN HANDOFF
+# ============================================================
+
+@router.post("/cases/{case_id}/human-handoff")
+def initiate_human_handoff(case_id: str):
+    """
+    Connect the Safety/Route layer to the existing HUMAN_REVIEW
+    pathway.
+
+    This endpoint:
+    1. Verifies the case exists.
+    2. Finds the latest HUMAN_REVIEW route.
+    3. Activates the route.
+    4. Ensures a corresponding action exists.
+    5. Moves the action into IN_PROGRESS.
+    6. Moves the case into HUMAN_REVIEW using the existing
+       database state-machine trigger.
+    7. Marks the active route step as IN_PROGRESS.
+    8. Persists a handoff record in action metadata.
+    """
+
+    # --------------------------------------------------------
+    # 1. GET CASE
+    # --------------------------------------------------------
+
+    case_response = (
+        supabase
+        .table("cases")
+        .select(
+            "case_id, title, description, "
+            "jurisdiction_country, jurisdiction_state, "
+            "domain, status, case_state"
+        )
+        .eq("case_id", case_id)
+        .execute()
+    )
+
+    if not case_response.data:
+        raise HTTPException(
+            status_code=404,
+            detail="Case not found"
+        )
+
+    case = case_response.data[0]
+    current_case_state = case.get("case_state") or "NEW"
+
+    # --------------------------------------------------------
+    # 2. FIND HUMAN REVIEW ROUTE
+    # --------------------------------------------------------
+
+    route_response = (
+        supabase
+        .table("justice_routes")
+        .select(
+            """
+            route_id,
+            case_id,
+            route_type,
+            route_status,
+            title,
+            description,
+            jurisdiction,
+            priority,
+            current_step_number,
+            total_steps,
+            requires_human_review,
+            metadata
+            """
+        )
+        .eq("case_id", case_id)
+        .eq("route_type", "HUMAN_REVIEW")
+        .in_("route_status", ["READY", "ACTIVE"])
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+
+    if not route_response.data:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No READY or ACTIVE HUMAN_REVIEW route exists "
+                "for this case."
+            )
+        )
+
+    route = route_response.data[0]
+    route_id = route["route_id"]
+
+    # --------------------------------------------------------
+    # 3. GET HUMAN REVIEW ROUTE STEPS
+    # --------------------------------------------------------
+
+    steps_response = (
+        supabase
+        .table("justice_route_steps")
+        .select(
+            """
+            step_id,
+            route_id,
+            step_number,
+            step_type,
+            title,
+            description,
+            action_text,
+            destination_name,
+            destination_type,
+            destination_url,
+            status,
+            is_required,
+            requires_human_review,
+            completed_at,
+            metadata
+            """
+        )
+        .eq("route_id", route_id)
+        .order("step_number")
+        .execute()
+    )
+
+    steps = steps_response.data or []
+
+    if not steps:
+        raise HTTPException(
+            status_code=422,
+            detail="Human review route has no steps."
+        )
+
+    # --------------------------------------------------------
+    # 4. FIND ACTIVE/READY ACTION
+    # --------------------------------------------------------
+
+    action_response = (
+        supabase
+        .table("actions")
+        .select(
+            """
+            action_id,
+            case_id,
+            route_id,
+            step_id,
+            action_type,
+            title,
+            description,
+            action_text,
+            destination_name,
+            destination_type,
+            destination_url,
+            status,
+            priority,
+            requires_human_review,
+            generated_by,
+            metadata,
+            created_at,
+            updated_at
+            """
+        )
+        .eq("case_id", case_id)
+        .eq("route_id", route_id)
+        .in_("status", ["READY", "IN_PROGRESS"])
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+
+    actions = action_response.data or []
+
+    # --------------------------------------------------------
+    # 5. GENERATE ACTION IF NEEDED
+    # --------------------------------------------------------
+
+    if not actions:
+
+        try:
+            generated_response = supabase.rpc(
+                "generate_next_action",
+                {
+                    "p_case_id": case_id
+                }
+            ).execute()
+
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Failed to generate human-review action: "
+                    f"{str(e)}"
+                )
+            )
+
+        generated_data = generated_response.data
+
+        if isinstance(generated_data, list):
+            generated_action_id = (
+                generated_data[0]
+                if generated_data
+                else None
+            )
+        else:
+            generated_action_id = generated_data
+
+        if not generated_action_id:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Unable to generate an action for the "
+                    "human-review route."
+                )
+            )
+
+        action_response = (
+            supabase
+            .table("actions")
+            .select(
+                """
+                action_id,
+                case_id,
+                route_id,
+                step_id,
+                action_type,
+                title,
+                description,
+                action_text,
+                destination_name,
+                destination_type,
+                destination_url,
+                status,
+                priority,
+                requires_human_review,
+                generated_by,
+                metadata,
+                created_at,
+                updated_at
+                """
+            )
+            .eq("action_id", str(generated_action_id))
+            .execute()
+        )
+
+        actions = action_response.data or []
+
+    if not actions:
+        raise HTTPException(
+            status_code=500,
+            detail="Human-review action could not be loaded."
+        )
+
+    action = actions[0]
+    action_id = action["action_id"]
+
+    # --------------------------------------------------------
+    # 6. ACTIVATE HUMAN REVIEW ROUTE
+    # --------------------------------------------------------
+
+    route_metadata = route.get("metadata") or {}
+
+    if not isinstance(route_metadata, dict):
+        route_metadata = {}
+
+    route_metadata.update({
+        "human_handoff": True,
+        "handoff_status": "ACTIVE",
+        "handoff_initiated_by": "NYAYAOS",
+    })
+
+    try:
+        route_update = (
+            supabase
+            .table("justice_routes")
+            .update({
+                "route_status": "ACTIVE",
+                "requires_human_review": True,
+                "metadata": route_metadata,
+            })
+            .eq("route_id", route_id)
+            .execute()
+        )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Failed to activate human-review route: "
+                f"{str(e)}"
+            )
+        )
+
+    updated_route = (
+        route_update.data[0]
+        if route_update.data
+        else route
+    )
+
+    # --------------------------------------------------------
+    # 7. MOVE ACTION TO IN_PROGRESS
+    # --------------------------------------------------------
+
+    if action.get("status") == "READY":
+
+        try:
+            transition_response = supabase.rpc(
+                "transition_action_status",
+                {
+                    "p_action_id": action_id,
+                    "p_new_status": "IN_PROGRESS",
+                    "p_reason": "Human handoff initiated",
+                    "p_changed_by": "NYAYAOS",
+                }
+            ).execute()
+
+            if transition_response.data:
+                action_refresh = (
+                    supabase
+                    .table("actions")
+                    .select(
+                        """
+                        action_id,
+                        case_id,
+                        route_id,
+                        step_id,
+                        action_type,
+                        title,
+                        description,
+                        action_text,
+                        destination_name,
+                        destination_type,
+                        destination_url,
+                        status,
+                        priority,
+                        requires_human_review,
+                        generated_by,
+                        metadata,
+                        created_at,
+                        updated_at
+                        """
+                    )
+                    .eq("action_id", action_id)
+                    .execute()
+                )
+
+                if action_refresh.data:
+                    action = action_refresh.data[0]
+
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Failed to transition human-review action "
+                    f"to IN_PROGRESS: {str(e)}"
+                )
+            )
+
+    # --------------------------------------------------------
+    # 8. MARK THE ACTIVE HUMAN-REVIEW STEP
+    # --------------------------------------------------------
+
+    step_id = action.get("step_id")
+
+    if not step_id:
+        ready_steps = [
+            step
+            for step in steps
+            if step.get("status") == "READY"
+        ]
+
+        if ready_steps:
+            step_id = ready_steps[0]["step_id"]
+
+    if step_id:
+
+        try:
+            step_update = (
+                supabase
+                .table("justice_route_steps")
+                .update({
+                    "status": "IN_PROGRESS",
+                })
+                .eq("step_id", step_id)
+                .in_("status", ["READY", "PENDING"])
+                .execute()
+            )
+
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Failed to activate human-review step: "
+                    f"{str(e)}"
+                )
+            )
+
+    # --------------------------------------------------------
+    # 9. MOVE CASE TO HUMAN_REVIEW
+    # --------------------------------------------------------
+
+    if current_case_state != "HUMAN_REVIEW":
+
+        try:
+            case_update = (
+                supabase
+                .table("cases")
+                .update({
+                    "case_state": "HUMAN_REVIEW",
+                })
+                .eq("case_id", case_id)
+                .execute()
+            )
+
+        except Exception as e:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Human handoff could not move the case into "
+                    "HUMAN_REVIEW. The existing case state machine "
+                    f"rejected the transition: {str(e)}"
+                )
+            )
+
+    # --------------------------------------------------------
+    # 10. PERSIST HANDOFF METADATA ON ACTION
+    # --------------------------------------------------------
+
+    action_metadata = action.get("metadata") or {}
+
+    if not isinstance(action_metadata, dict):
+        action_metadata = {}
+
+    action_metadata.update({
+        "human_handoff": True,
+        "handoff_status": "ACTIVE",
+        "handoff_initiated_by": "NYAYAOS",
+        "handoff_case_state": "HUMAN_REVIEW",
+        "handoff_route_id": route_id,
+        "handoff_step_id": step_id,
+    })
+
+    try:
+        action_update = (
+            supabase
+            .table("actions")
+            .update({
+                "requires_human_review": True,
+                "metadata": action_metadata,
+            })
+            .eq("action_id", action_id)
+            .execute()
+        )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Failed to persist human-handoff metadata: "
+                f"{str(e)}"
+            )
+        )
+
+    updated_action = (
+        action_update.data[0]
+        if action_update.data
+        else action
+    )
+
+    # --------------------------------------------------------
+    # 11. RETURN HUMAN HANDOFF
+    # --------------------------------------------------------
+
+    return {
+        "case_id": case_id,
+        "case_state": "HUMAN_REVIEW",
+        "handoff_status": "ACTIVE",
+        "handoff_type": "HUMAN_REVIEW",
+        "message": (
+            "Case successfully handed off for human review."
+        ),
+        "route": updated_route,
+        "action": updated_action,
+        "step_id": step_id,
+        "human_review_required": True,
+    }
+
+
+# ============================================================
+# GET HUMAN HANDOFF STATUS
+# ============================================================
+
+@router.get("/cases/{case_id}/human-handoff")
+def get_human_handoff(case_id: str):
+    """
+    Return the persisted human-handoff state for a case.
+    """
+
+    case_response = (
+        supabase
+        .table("cases")
+        .select(
+            "case_id, title, case_state"
+        )
+        .eq("case_id", case_id)
+        .execute()
+    )
+
+    if not case_response.data:
+        raise HTTPException(
+            status_code=404,
+            detail="Case not found"
+        )
+
+    case = case_response.data[0]
+
+    route_response = (
+        supabase
+        .table("justice_routes")
+        .select(
+            """
+            route_id,
+            case_id,
+            route_type,
+            route_status,
+            title,
+            description,
+            jurisdiction,
+            priority,
+            current_step_number,
+            total_steps,
+            requires_human_review,
+            metadata
+            """
+        )
+        .eq("case_id", case_id)
+        .eq("route_type", "HUMAN_REVIEW")
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+
+    route = (
+        route_response.data[0]
+        if route_response.data
+        else None
+    )
+
+    action = None
+
+    if route:
+        action_response = (
+            supabase
+            .table("actions")
+            .select(
+                """
+                action_id,
+                case_id,
+                route_id,
+                step_id,
+                action_type,
+                title,
+                description,
+                action_text,
+                destination_name,
+                destination_type,
+                destination_url,
+                status,
+                priority,
+                requires_human_review,
+                generated_by,
+                metadata,
+                created_at,
+                updated_at
+                """
+            )
+            .eq("case_id", case_id)
+            .eq("route_id", route["route_id"])
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+
+        if action_response.data:
+            action = action_response.data[0]
+
+    return {
+        "case_id": case_id,
+        "case_state": case.get("case_state"),
+        "handoff_active": (
+            case.get("case_state") == "HUMAN_REVIEW"
+            and bool(route)
+            and route.get("route_status") in ["READY", "ACTIVE"]
+        ),
+        "route": route,
+        "action": action,
+    }
+# ============================================================
+# CREATE EVIDENCE PACKET
+# ============================================================
+
+@router.post("/cases/{case_id}/evidence-packet")
+def create_evidence_packet(case_id: str):
+    """
+    Generate and persist a traceable Evidence Packet
+    for the specified case.
+    """
+
+    try:
+        result = EvidencePacketService.create_packet(
+            case_id=case_id
+        )
+
+        return {
+            "case_id": case_id,
+            "message": "Evidence Packet generated successfully.",
+            **result,
+        }
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=str(exc)
+        )
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate Evidence Packet: {exc}"
+        )
+
+
+# ============================================================
+# GET EVIDENCE PACKET
+# ============================================================
+
+@router.get("/evidence-packets/{packet_id}")
+def get_evidence_packet(packet_id: str):
+    """
+    Return a persisted Evidence Packet.
+    """
+
+    try:
+        packet = EvidencePacketService.get_packet(
+            packet_id=packet_id
+        )
+
+        return packet
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=str(exc)
+        )
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve Evidence Packet: {exc}"
+        )
+# ============================================================
+# GET CASE JOURNEY
+# ============================================================
+
+@router.get("/cases/{case_id}/journey")
+def get_case_journey(case_id: str):
+    """
+    Return the complete persisted justice journey for a case.
+    """
+
+    case_response = (
+        supabase
+        .table("cases")
+        .select(
+            """
+            case_id,
+            title,
+            description,
+            jurisdiction_country,
+            jurisdiction_state,
+            case_state,
+            created_at
+            """
+        )
+        .eq("case_id", case_id)
+        .execute()
+    )
+
+    if not case_response.data:
+        raise HTTPException(
+            status_code=404,
+            detail="Case not found"
+        )
+
+    case = case_response.data[0]
+
+    state_response = (
+        supabase
+        .table("case_state_history")
+        .select("*")
+        .eq("case_id", case_id)
+        .order("created_at")
+        .execute()
+    )
+
+    state_history = state_response.data or []
+
+    route_response = (
+        supabase
+        .table("justice_routes")
+        .select("*")
+        .eq("case_id", case_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+
+    routes = route_response.data or []
+
+    route_ids = [
+        route["route_id"]
+        for route in routes
+        if route.get("route_id")
+    ]
+
+    steps = []
+
+    if route_ids:
+        step_response = (
+            supabase
+            .table("justice_route_steps")
+            .select("*")
+            .in_("route_id", route_ids)
+            .order("step_number")
+            .execute()
+        )
+
+        steps = step_response.data or []
+
+    action_response = (
+        supabase
+        .table("actions")
+        .select("*")
+        .eq("case_id", case_id)
+        .order("created_at")
+        .execute()
+    )
+
+    actions = action_response.data or []
+
+    journey_routes = []
+
+    for route in routes:
+        route_steps = [
+            step
+            for step in steps
+            if step.get("route_id") == route.get("route_id")
+        ]
+
+        route_actions = [
+            action
+            for action in actions
+            if action.get("route_id") == route.get("route_id")
+        ]
+
+        journey_routes.append({
+            **route,
+            "steps": route_steps,
+            "actions": route_actions
+        })
+
+    completed_steps = sum(
+        1
+        for step in steps
+        if step.get("status") == "COMPLETED"
+    )
+
+    total_steps = len(steps)
+
+    journey_progress = (
+        round(
+            (completed_steps / total_steps) * 100,
+            2
+        )
+        if total_steps
+        else 0.0
+    )
+
+    active_actions = [
+        action
+        for action in actions
+        if action.get("status") in [
+            "READY",
+            "IN_PROGRESS"
+        ]
+    ]
+
+    completed_actions = [
+        action
+        for action in actions
+        if action.get("status") == "COMPLETED"
+    ]
+
+    human_review_required = (
+        case.get("case_state") == "HUMAN_REVIEW"
+        or any(
+            route.get("requires_human_review")
+            for route in routes
+        )
+        or any(
+            action.get("requires_human_review")
+            for action in actions
+        )
+    )
+
+    return {
+        "case": case,
+        "current_state": case.get("case_state"),
+        "state_history": state_history,
+        "routes": journey_routes,
+        "actions": actions,
+        "journey_summary": {
+            "total_routes": len(routes),
+            "total_steps": total_steps,
+            "completed_steps": completed_steps,
+            "journey_progress_percentage": journey_progress,
+            "total_actions": len(actions),
+            "completed_actions": len(completed_actions),
+            "active_actions": len(active_actions),
+            "human_review_required": human_review_required
+        },
+        "human_review": {
+            "required": human_review_required,
+            "active": (
+                case.get("case_state")
+                == "HUMAN_REVIEW"
+            )
         }
     }
