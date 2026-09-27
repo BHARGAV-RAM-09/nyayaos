@@ -880,50 +880,7 @@ duplicate-action protection
 human-review routing
 Human Handoff
 
-The implemented test demonstrated:
 
-case_state        = HUMAN_REVIEW
-handoff_status    = ACTIVE
-handoff_type      = HUMAN_REVIEW
-human_review_required = TRUE
-action.status     = IN_PROGRESS
-route_status      = ACTIVE
-25. Project Structure
-NYAYAOS/
-│
-├── backend/
-│   ├── app/
-│   │   ├── api/
-│   │   │   ├── legal.py
-│   │   │   └── routes.py
-│   │   │
-│   │   ├── core/
-│   │   │   └── config.py
-│   │   │
-│   │   ├── services/
-│   │   │   ├── ai_extraction_service.py
-│   │   │   ├── case_legal_retrieval_service.py
-│   │   │   ├── evidence_packet_service.py
-│   │   │   ├── legal_embedding_service.py
-│   │   │   ├── legal_ingestion_service.py
-│   │   │   ├── legal_rag_service.py
-│   │   │   ├── legal_vector_service.py
-│   │   │   ├── pdf_service.py
-│   │   │   ├── legal_*_verification_service.py
-│   │   │   └── ...
-│   │   │
-│   │   └── ...
-│   │
-│   ├── main.py
-│   └── requirements.txt
-│
-├── frontend/
-│   ├── app/
-│   │   └── page.tsx
-│   ├── public/
-│   └── package.json
-│
-└── README.md
 26. Local Development
 Backend
 cd C:\Users\bharg\Documents\NYAYAOS\backend
